@@ -1,0 +1,114 @@
+name: Paylocity Sync
+
+on:
+  # Nightly at 2 AM ET (07:00 UTC)
+  schedule:
+    - cron: "0 7 * * *"
+
+  # Manual trigger with optional single-employee mode
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Sync mode"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - employee
+      employee_id:
+        description: "Paylocity employee ID (only used when mode=employee)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run — log changes without applying them"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+  # Real-time webhook trigger: call GitHub API with event_type=paylocity-sync
+  # to fire this workflow immediately when Paylocity sends a webhook.
+  repository_dispatch:
+    types: [paylocity-sync]
+
+jobs:
+  sync:
+    name: Run sync
+    runs-on: ubuntu-latest
+
+    # Safety: never run concurrently so state is consistent
+    concurrency:
+      group: paylocity-sync
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        working-directory: paylocity-sync
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: paylocity-sync/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Test connections (read-only)
+        env:
+          PAYLOCITY_CLIENT_ID: ${{ secrets.PAYLOCITY_CLIENT_ID }}
+          PAYLOCITY_CLIENT_SECRET: ${{ secrets.PAYLOCITY_CLIENT_SECRET }}
+          PAYLOCITY_COMPANY_ID: ${{ secrets.PAYLOCITY_COMPANY_ID }}
+          CR_CLIENT_ID: ${{ secrets.CR_CLIENT_ID }}
+          CR_CLIENT_SECRET: ${{ secrets.CR_CLIENT_SECRET }}
+          CR_API_KEY: ${{ secrets.CR_API_KEY }}
+          CR_BASE_URL: ${{ secrets.CR_BASE_URL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_ADMIN_EMAIL: ${{ secrets.GOOGLE_ADMIN_EMAIL }}
+          GOOGLE_DOMAIN: ${{ secrets.GOOGLE_DOMAIN }}
+          # Always skip Paylocity in connection test if creds not yet configured
+        run: python test_connections.py --skip-paylocity
+        continue-on-error: true   # Don't block sync if one system is unreachable
+
+      - name: Run full sync
+        if: >
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          github.event_name == 'repository_dispatch'
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'true' }}
+          PAYLOCITY_CLIENT_ID: ${{ secrets.PAYLOCITY_CLIENT_ID }}
+          PAYLOCITY_CLIENT_SECRET: ${{ secrets.PAYLOCITY_CLIENT_SECRET }}
+          PAYLOCITY_COMPANY_ID: ${{ secrets.PAYLOCITY_COMPANY_ID }}
+          CR_CLIENT_ID: ${{ secrets.CR_CLIENT_ID }}
+          CR_CLIENT_SECRET: ${{ secrets.CR_CLIENT_SECRET }}
+          CR_API_KEY: ${{ secrets.CR_API_KEY }}
+          CR_BASE_URL: ${{ secrets.CR_BASE_URL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_ADMIN_EMAIL: ${{ secrets.GOOGLE_ADMIN_EMAIL }}
+          GOOGLE_DOMAIN: ${{ secrets.GOOGLE_DOMAIN }}
+          DEFAULT_TEMP_PASSWORD: ${{ secrets.DEFAULT_TEMP_PASSWORD }}
+        run: python main.py full
+
+      - name: Run single-employee sync
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'employee'
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          PAYLOCITY_CLIENT_ID: ${{ secrets.PAYLOCITY_CLIENT_ID }}
+          PAYLOCITY_CLIENT_SECRET: ${{ secrets.PAYLOCITY_CLIENT_SECRET }}
+          PAYLOCITY_COMPANY_ID: ${{ secrets.PAYLOCITY_COMPANY_ID }}
+          CR_CLIENT_ID: ${{ secrets.CR_CLIENT_ID }}
+          CR_CLIENT_SECRET: ${{ secrets.CR_CLIENT_SECRET }}
+          CR_API_KEY: ${{ secrets.CR_API_KEY }}
+          CR_BASE_URL: ${{ secrets.CR_BASE_URL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_ADMIN_EMAIL: ${{ secrets.GOOGLE_ADMIN_EMAIL }}
+          GOOGLE_DOMAIN: ${{ secrets.GOOGLE_DOMAIN }}
+          DEFAULT_TEMP_PASSWORD: ${{ secrets.DEFAULT_TEMP_PASSWORD }}
+        run: python main.py employee ${{ inputs.employee_id }}
